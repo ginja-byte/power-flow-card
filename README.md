@@ -354,6 +354,9 @@ You haven't configured the inverter section, or the configured entity is unavail
 
 ## Changelog
 
+### v0.2.1
+- **Card shrinks when solar is disabled.** Removing the solar node previously left an empty top half — the layout now uses a shorter aspect ratio and repositions grid / load / inverter / battery to fill the available space. No change for solar-enabled setups.
+
 ### v0.2.0
 - **Solar can be disabled** via `solar.enabled: false` — hides node, arc, flow line, and PV footer cell for battery + grid only setups
 - **Customizable colors** via the `colors:` config section, with a visual editor section for the 14 most-tweaked palette keys (the rest are YAML-only)

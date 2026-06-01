@@ -405,6 +405,34 @@ console.log("\n=== Scenario 10a: solar disabled — battery + grid only setup ==
   contains(html, "GRID",                    "still renders GRID");
   contains(html, "BATTERY",                 "still renders BATTERY");
   contains(html, "LOAD",                    "still renders LOAD");
+  // Layout-shrink checks: aspect ratio and viewBox should both be the "short"
+  // values, not the tall defaults.
+  contains(html, "aspect-ratio:1/0.65",     "uses short aspect ratio when solar off");
+  contains(html, "0 0 500 290",             "uses short flow viewBox when solar off");
+  notContains(html, "aspect-ratio:1/1.05",  "does not use tall aspect ratio when solar off");
+  notContains(html, "0 0 500 460",          "does not use tall viewBox when solar off");
+  // Inverter should be at 30%, not 50%, in short layout
+  contains(html, "top:30%",                 "inverter top in short layout is 30%");
+}
+
+console.log("\n=== Scenario 10c: solar enabled uses tall layout ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+  });
+  const hass = makeHass({
+    "sensor.pv": 2000, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 800,
+  });
+  const html = api.renderCard(hass, cfg);
+  contains(html, "aspect-ratio:1/1.05",  "uses tall aspect ratio when solar on (no regression)");
+  contains(html, "0 0 500 460",          "uses tall flow viewBox when solar on (no regression)");
+  contains(html, "top:50%",              "inverter top in tall layout is 50% (no regression)");
 }
 
 console.log("\n=== Scenario 10b: solar enabled but power_entity not set ===");

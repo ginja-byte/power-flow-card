@@ -10,7 +10,7 @@
  * License: MIT
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.2.1";
 const CARD_TAG = "power-flow-card";
 const EDITOR_TAG = "power-flow-card-editor";
 
@@ -605,6 +605,78 @@ function computeSunPosition() {
 }
 
 // ============================================================================
+// Layout — pick geometry based on which optional sections are visible
+// ============================================================================
+
+/**
+ * Returns all positioning data the renderers need — node `top:%` values, SVG
+ * viewBox, flow line endpoints, container aspect ratio. Computed once per
+ * render so we don't repeat geometry decisions inline in each renderer.
+ *
+ * Two layout modes:
+ *  - "tall" (solar enabled): the original 5-node layout with solar at the top
+ *    and battery at the bottom, aspect ratio ~1:1.05.
+ *  - "short" (solar disabled): solar zone removed, vertical canvas trimmed to
+ *    roughly 2/3 of tall, grid/load/inverter line near the top, battery below.
+ *
+ * Battery and generator vertical positions also shift up slightly in "short"
+ * mode so the layout stays balanced.
+ */
+function computeLayout(cfg) {
+  if (cfg.solar.enabled) {
+    // Tall layout — original v0.1.0 geometry, unchanged.
+    return {
+      mode: "tall",
+      aspectRatio: "1/1.05",
+      flowViewBox: "0 0 500 460",
+      nodes: {
+        solar:     { left: "50%", top: "14%" },
+        grid:      { left: "16%", top: "50%" },
+        generator: { left: "16%", top: "78%" },
+        load:      { left: "84%", top: "50%" },
+        battery:   { left: "50%", top: "84%" },
+      },
+      inverter: { topPercent: 50 },
+      flow: {
+        solarToInverter:     { x1: 250, y1: 116, x2: 250, y2: 196 },
+        gridToInverter:      { x1: 124, y1: 230, x2: 206, y2: 230 },
+        inverterToLoad:      { x1: 294, y1: 230, x2: 376, y2: 230 },
+        inverterToBatt:      { x1: 250, y1: 274, x2: 250, y2: 344 },
+        generatorToInverter: { x1: 124, y1: 354, x2: 206, y2: 274 },
+        boltsTransform:      "translate(250,120)",
+      },
+    };
+  }
+
+  // Short layout — solar zone removed. Canvas is ~62% of original height.
+  // Inverter sits near the upper-third with grid/load on its sides, battery
+  // below. Generator (when enabled) tucks into the lower-left.
+  return {
+    mode: "short",
+    aspectRatio: "1/0.65",
+    flowViewBox: "0 0 500 290",
+    nodes: {
+      // No "solar" entry — render code already gates on cfg.solar.enabled
+      grid:      { left: "16%", top: "30%" },
+      generator: { left: "16%", top: "72%" },
+      load:      { left: "84%", top: "30%" },
+      battery:   { left: "50%", top: "78%" },
+    },
+    inverter: { topPercent: 30 },
+    flow: {
+      // Horizontal grid→inverter→load line is at y=80 (instead of 230)
+      gridToInverter:      { x1: 124, y1: 80, x2: 206, y2: 80 },
+      inverterToLoad:      { x1: 294, y1: 80, x2: 376, y2: 80 },
+      // Battery line is shorter — from inverter bottom (y=124) down to
+      // battery top (y=200)
+      inverterToBatt:      { x1: 250, y1: 124, x2: 250, y2: 200 },
+      // Generator approaches inverter from lower-left
+      generatorToInverter: { x1: 124, y1: 215, x2: 206, y2: 124 },
+    },
+  };
+}
+
+// ============================================================================
 // SVG icon templates
 // ============================================================================
 
@@ -697,7 +769,7 @@ const SVG_ICONS = {
 // CSS — packaged as a single block injected at render time
 // ============================================================================
 
-function renderCss(cInv) {
+function renderCss(cInv, layout) {
   return `
     .pfc{font-family:var(--primary-font-family,system-ui);color:${COLORS.text};
          font-variant-numeric:tabular-nums;display:flex;flex-direction:column;
@@ -710,7 +782,7 @@ function renderCss(cInv) {
              background:linear-gradient(180deg,${COLORS.bg_dark} 0%,transparent 100%);}
     .pfc-arc svg{display:block;width:100%;height:100%;}
 
-    .pfc-main{position:relative;aspect-ratio:1/1.05;width:100%;max-width:520px;
+    .pfc-main{position:relative;aspect-ratio:${layout.aspectRatio};width:100%;max-width:520px;
               margin:0 auto;box-sizing:border-box;overflow:hidden;}
     .pfc-main > svg.flow{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
 
@@ -727,7 +799,7 @@ function renderCss(cInv) {
     .pfc-ring-inner{width:100%;height:100%;background:${COLORS.bg_dark};border-radius:50%;
                     display:flex;align-items:center;justify-content:center;}
 
-    .pfc-inv{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    .pfc-inv{position:absolute;left:50%;top:${layout.inverter.topPercent}%;transform:translate(-50%,-50%);
              width:18%;aspect-ratio:1;min-width:78px;max-width:100px;
              border-radius:12px;background:${COLORS.bg_darker};border:2px solid ${cInv};
              box-shadow:0 0 14px ${cInv}99,inset 0 0 10px ${cInv}33;
@@ -864,9 +936,10 @@ function renderSolarArc(solarOn) {
   `;
 }
 
-function renderSolarNode(s, c) {
+function renderSolarNode(s, c, layout) {
+  const pos = layout.nodes.solar;
   return `
-    <div class="pfc-node" style="left:50%;top:14%;">
+    <div class="pfc-node" style="left:${pos.left};top:${pos.top};">
       ${SVG_ICONS.solarPanel(c.cSol, s.solarOn)}
       <span class="pfc-label">SOLAR</span>
       <span class="pfc-val" style="color:${c.cSol};">${fmtPower(s.pv)}</span>
@@ -875,12 +948,13 @@ function renderSolarNode(s, c) {
   `;
 }
 
-function renderGridNode(s, c, cfg) {
+function renderGridNode(s, c, cfg, layout) {
+  const pos = layout.nodes.grid;
   const stateLine = s.gridOff
     ? "NO POWER"
     : `${fmtVoltage(s.gridV)} · ${s.gridImporting ? "IMPORT" : s.gridExporting ? "EXPORT" : "IDLE"}`;
   return `
-    <div class="pfc-node ${s.gridOff ? "grid-alert" : ""}" style="left:16%;top:50%;">
+    <div class="pfc-node ${s.gridOff ? "grid-alert" : ""}" style="left:${pos.left};top:${pos.top};">
       ${SVG_ICONS.gridPylon(c.cGrd, s.gridOff)}
       <span class="pfc-label" style="color:${s.gridOff ? COLORS.text_alert : COLORS.text_muted};">
         ${s.gridOff ? "GRID OFF" : "GRID"}
@@ -891,10 +965,11 @@ function renderGridNode(s, c, cfg) {
   `;
 }
 
-function renderGeneratorNode(s, c) {
+function renderGeneratorNode(s, c, layout) {
   if (!s.gen) return "";
+  const pos = layout.nodes.generator;
   return `
-    <div class="pfc-node" style="left:16%;top:78%;">
+    <div class="pfc-node" style="left:${pos.left};top:${pos.top};">
       ${SVG_ICONS.generator(c.cGen, s.genOn)}
       <span class="pfc-label" style="color:${s.genOn ? COLORS.generator : COLORS.text_muted};">GENERATOR</span>
       <span class="pfc-val" style="color:${c.cGen};">${s.genOn ? fmtPower(s.gen.power) : "OFF"}</span>
@@ -903,7 +978,8 @@ function renderGeneratorNode(s, c) {
   `;
 }
 
-function renderLoadNode(s, c) {
+function renderLoadNode(s, c, layout) {
+  const pos = layout.nodes.load;
   const pctOrPower = s.loadPct !== null
     ? `${s.loadPct.toFixed(0)}%`
     : fmtPower(s.load);
@@ -931,7 +1007,7 @@ function renderLoadNode(s, c) {
   }
 
   return `
-    <div class="pfc-node" style="left:84%;top:50%;">
+    <div class="pfc-node" style="left:${pos.left};top:${pos.top};">
       <div class="pfc-ring" style="background:${ringBg};">
         <div class="pfc-ring-inner">
           ${SVG_ICONS.house(c.cLoad)}
@@ -944,11 +1020,12 @@ function renderLoadNode(s, c) {
   `;
 }
 
-function renderBatteryNode(s, c, cfg) {
+function renderBatteryNode(s, c, cfg, layout) {
+  const pos = layout.nodes.battery;
   const eta = computeBatteryEta(s, cfg);
   const arrow = s.battCharging ? "↓ IN" : s.battDischarging ? "↑ OUT" : "";
   return `
-    <div class="pfc-node" style="left:50%;top:84%;">
+    <div class="pfc-node" style="left:${pos.left};top:${pos.top};">
       ${SVG_ICONS.battery(c.cBat, s.soc, cfg.battery.min_soc_percent, s.battCharging)}
       <span class="pfc-label">BATTERY</span>
       <span class="pfc-val" style="color:${c.cBat};">${s.soc.toFixed(0)}%</span>
@@ -970,11 +1047,10 @@ function renderInverterCenter(s) {
 
 /**
  * Render the SVG-overlay flow lines connecting solar/grid/battery/load/inverter.
+ * Coordinates and viewBox come from the layout object so the same renderer
+ * works for both "tall" (solar enabled) and "short" (solar disabled) modes.
  */
-function renderFlowLines(s, c, cfg) {
-  // Battery line: if charging, can have segmented (PV + grid contributions)
-  // The geometry of the layout (centred inverter at 50/50, nodes at quarters)
-  // is reflected in these viewBox coordinates (0–500 × 0–460).
+function renderFlowLines(s, c, cfg, layout) {
   const pvCh   = s.battCharging ? Math.max(0, Math.min(s.batt, s.pv)) : 0;
   const gridCh = s.battCharging ? Math.max(0, s.batt - pvCh) : 0;
   const battSegments = [
@@ -982,34 +1058,48 @@ function renderFlowLines(s, c, cfg) {
     { frac: gridCh, color: c.cGrd },
   ];
 
-  // Solar "bolts" pouring down — animated particles for the solar→inverter
-  // flow. Only when solar is producing.
-  const bolts = s.solarOn ? `
-    <g transform="translate(250,120)">
-      ${[0, 1, 2, 3, 4].map(() => `
-        <g class="pour-b">
-          <path d="M0 0 L-3 9 L1 9 L-2 20 L4 7 L0 7 L3 0 Z" fill="${c.cSol}"/>
-        </g>
-      `).join("")}
-    </g>` : "";
+  const f = layout.flow;
 
-  // Generator line — to the inverter from below-left
-  const genLine = cfg.generator.enabled
-    ? flowLine(124, 354, 206, 274, s.genOn, false, c.cGen)
+  // Solar→inverter line and "bolts" particle animation — only in tall layout
+  const solarSection = (cfg.solar.enabled && f.solarToInverter && f.boltsTransform)
+    ? `${flowLine(f.solarToInverter.x1, f.solarToInverter.y1,
+                  f.solarToInverter.x2, f.solarToInverter.y2,
+                  s.solarOn, false, c.cSol)}
+       ${s.solarOn ? `
+         <g transform="${f.boltsTransform}">
+           ${[0, 1, 2, 3, 4].map(() => `
+             <g class="pour-b">
+               <path d="M0 0 L-3 9 L1 9 L-2 20 L4 7 L0 7 L3 0 Z" fill="${c.cSol}"/>
+             </g>
+           `).join("")}
+         </g>` : ""}`
     : "";
 
+  const genLine = (cfg.generator.enabled && f.generatorToInverter)
+    ? flowLine(f.generatorToInverter.x1, f.generatorToInverter.y1,
+               f.generatorToInverter.x2, f.generatorToInverter.y2,
+               s.genOn, false, c.cGen)
+    : "";
+
+  const battLine = s.battCharging
+    ? flowLineSegmented(f.inverterToBatt.x1, f.inverterToBatt.y1,
+                        f.inverterToBatt.x2, f.inverterToBatt.y2,
+                        battSegments, false)
+    : flowLine(f.inverterToBatt.x1, f.inverterToBatt.y1,
+               f.inverterToBatt.x2, f.inverterToBatt.y2,
+               s.battDischarging, s.battDischarging, c.cBat);
+
   return `
-    <svg class="flow" viewBox="0 0 500 460" preserveAspectRatio="none">
-      ${cfg.solar.enabled
-        ? flowLine(250, 116, 250, 196, s.solarOn, false, c.cSol)
-        : ""}
-      ${flowLine(124, 230, 206, 230, s.gridImporting || s.gridExporting, s.gridExporting, c.cGrd)}
-      ${flowLine(294, 230, 376, 230, s.loadOn, false, c.cLoad)}
-      ${s.battCharging
-        ? flowLineSegmented(250, 274, 250, 344, battSegments, false)
-        : flowLine(250, 274, 250, 344, s.battDischarging, s.battDischarging, c.cBat)}
+    <svg class="flow" viewBox="${layout.flowViewBox}" preserveAspectRatio="none">
+      ${solarSection}
+      ${flowLine(f.gridToInverter.x1, f.gridToInverter.y1,
+                 f.gridToInverter.x2, f.gridToInverter.y2,
+                 s.gridImporting || s.gridExporting, s.gridExporting, c.cGrd)}
+      ${flowLine(f.inverterToLoad.x1, f.inverterToLoad.y1,
+                 f.inverterToLoad.x2, f.inverterToLoad.y2,
+                 s.loadOn, false, c.cLoad)}
+      ${battLine}
       ${genLine}
-      ${cfg.solar.enabled ? bolts : ""}
     </svg>
   `;
 }
@@ -1097,18 +1187,19 @@ function renderCard(hass, cfg) {
   resolveColors(cfg.colors);
   const s = deriveState(hass, cfg);
   const c = computeColors(s, cfg);
+  const layout = computeLayout(cfg);
   return `
-    <style>${renderCss(c.cInv)}</style>
+    <style>${renderCss(c.cInv, layout)}</style>
     <div class="pfc">
       ${cfg.title ? `<div class="pfc-title">${esc(cfg.title.toUpperCase())}</div>` : ""}
       ${cfg.solar.enabled ? renderSolarArc(s.solarOn) : ""}
       <div class="pfc-main">
-        ${renderFlowLines(s, c, cfg)}
-        ${cfg.solar.enabled ? renderSolarNode(s, c) : ""}
-        ${renderGridNode(s, c, cfg)}
-        ${cfg.generator.enabled ? renderGeneratorNode(s, c) : ""}
-        ${renderLoadNode(s, c)}
-        ${renderBatteryNode(s, c, cfg)}
+        ${renderFlowLines(s, c, cfg, layout)}
+        ${cfg.solar.enabled ? renderSolarNode(s, c, layout) : ""}
+        ${renderGridNode(s, c, cfg, layout)}
+        ${cfg.generator.enabled ? renderGeneratorNode(s, c, layout) : ""}
+        ${renderLoadNode(s, c, layout)}
+        ${renderBatteryNode(s, c, cfg, layout)}
         ${renderInverterCenter(s)}
       </div>
       ${renderThreePhaseDetail(s, cfg)}
