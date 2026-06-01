@@ -91,6 +91,70 @@ If your sensors are in kW or your sign conventions are opposite, create template
 
 ## Optional features
 
+### Disabling solar (battery + grid only setups)
+
+If you don't have solar, set `solar.enabled: false`. The solar node, solar arc, solar→inverter flow line, animated particles, and PV TODAY footer cell are all hidden, and the card is balanced for a battery + grid (or battery + grid + generator) setup.
+
+```yaml
+solar:
+  enabled: false
+```
+
+When enabled (the default), `power_entity` is required. When disabled, the whole `solar:` block can be left empty apart from the `enabled` flag — entities under it are ignored.
+
+### Custom colors
+
+Every color on the card is overridable via the `colors:` section. Provide hex values (e.g. `"#06b6d4"`) for any keys you want to change — anything you omit falls back to the default. Unknown keys are silently ignored, so future versions adding new colors won't break your config.
+
+```yaml
+colors:
+  solar: "#ffaa00"
+  battery_charging: "#22c55e"
+  battery_low_dis: "#facc15"
+  battery_med_dis: "#fb923c"
+  battery_high_dis: "#dc2626"
+  grid_import: "#fb923c"
+  grid_export: "#22c55e"
+  grid_off: "#dc2626"
+  load_low: "#22c55e"
+  load_med: "#facc15"
+  load_high: "#fb923c"
+  load_max: "#dc2626"
+  generator: "#a855f7"
+  idle: "#64748b"
+```
+
+The visual editor has color pickers for the 14 most-tweaked keys under **Custom colors (optional)**. Some palette keys (background tones, alert pulse colors, separator-off color) are only overridable via YAML — see the full reference below.
+
+#### Full overridable palette keys
+
+| Key | Default | What it colors |
+|---|---|---|
+| `solar` | `#fbbf24` | Solar node, solar→inverter flow, sun arc dot |
+| `battery_charging` | `#10b981` | Battery node when charging |
+| `battery_low_dis` | `#fbbf24` | Battery node, light discharge (≤1 kW) |
+| `battery_med_dis` | `#f97316` | Battery node, medium discharge (≤2.5 kW) |
+| `battery_high_dis` | `#ef4444` | Battery node, heavy discharge (>2.5 kW) |
+| `grid_import` | `#f97316` | Grid node + flow when importing |
+| `grid_export` | `#10b981` | Grid node + flow when exporting |
+| `grid_off` | `#ef4444` | Grid node + outage alert |
+| `load_low` | `#10b981` | House node at ≤40% load |
+| `load_med` | `#fbbf24` | House node at 41–60% load |
+| `load_high` | `#f97316` | House node at 61–80% load |
+| `load_max` | `#ef4444` | House node at >80% load |
+| `generator` | `#a855f7` | Generator node + flow |
+| `idle` | `#64748b` | Any node when idle / no flow |
+| `panel_dim` | `#1f2544` | Inactive flow line backgrounds, borders |
+| `bg_dark` | `#0a0d1c` | Card background |
+| `bg_darker` | `#080a14` | Inverter box background, footer cells |
+| `text` | `#e2e8f0` | Body text |
+| `text_muted` | `#94a3b8` | Labels, sub-text |
+| `text_dim` | `#64748b` | Footer column labels, time markers |
+| `text_alert` | `#ef4444` | Grid-off label, SOC cutoff line |
+| `alert_red_light` | `#fca5a5` | Inner stroke on grid-off cross |
+| `separator_off` | `#475569` | Load separator power readout when off |
+
+
 ### Generator
 
 ```yaml
@@ -182,14 +246,18 @@ The card extracts shorthand from values like `Solar/Battery/Utility (SBU)` → s
 | `inverter` | object | no | — | Inverter mode display (optional) |
 | `generator` | object | no | `{ enabled: false }` | Generator configuration (optional) |
 | `load_separators` | array | no | `[]` | 0–3 downstream load separators |
+| `colors` | object | no | `{}` | Color overrides — see [Custom colors](#custom-colors) above |
 
 ### `solar`
 
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `power_entity` | string | yes | — | PV power in watts |
+| `enabled` | bool | no | `true` | Set to `false` to hide the solar node, arc, flow line, and PV footer cell entirely |
+| `power_entity` | string | yes¹ | — | PV power in watts |
 | `energy_today_entity` | string | no | — | PV energy today in kWh |
 | `production_threshold_w` | number | no | `100` | Below this, solar is considered "off" |
+
+¹ Required when `enabled` is `true` (the default). Ignored when `enabled` is `false`.
 
 ### `battery`
 
@@ -283,6 +351,17 @@ Caused by other dashboard cards triggering frequent re-renders. The card re-rend
 
 **Inverter mode shows "—"**
 You haven't configured the inverter section, or the configured entity is unavailable. Both fields are optional — the box just shows a dash when unset.
+
+## Changelog
+
+### v0.2.0
+- **Solar can be disabled** via `solar.enabled: false` — hides node, arc, flow line, and PV footer cell for battery + grid only setups
+- **Customizable colors** via the `colors:` config section, with a visual editor section for the 14 most-tweaked palette keys (the rest are YAML-only)
+- Visual editor: solar's `power_entity` is no longer required (only required when solar is enabled)
+- Fixed: solar panel SVG sun icon was using a hardcoded hex value instead of the resolved solar color — overriding `solar` now actually recolors the entire solar visual
+
+### v0.1.0
+- Initial release: animated flow lines, solar arc, battery ETA, grid outage detection, three-phase support, up to 3 load separators, optional generator, visual editor
 
 ## License
 

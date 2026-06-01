@@ -10,7 +10,7 @@
  * License: MIT
  */
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 const CARD_TAG = "power-flow-card";
 const EDITOR_TAG = "power-flow-card-editor";
 
@@ -48,7 +48,13 @@ const DEFAULTS = {
   pv_threshold_w: 100, // minimum to consider solar "producing"
 };
 
-const COLORS = {
+/**
+ * Default color palette. Every key here can be overridden by the user via the
+ * `colors:` section in the config — see `normalizeConfig` and `resolveColors`.
+ * Renderers read from the resolved palette via the `COLORS` reference, which
+ * is rewritten per-render to merge user overrides over these defaults.
+ */
+const DEFAULT_COLORS = {
   solar: "#fbbf24",
   battery_charging: "#10b981",
   battery_low_dis: "#fbbf24",
@@ -73,6 +79,35 @@ const COLORS = {
   alert_red_light: "#fca5a5",
   separator_off: "#475569",
 };
+
+/**
+ * Mutable resolved palette. Renderers read from this. Rewritten per-render by
+ * `resolveColors(cfg)` which merges user overrides over `DEFAULT_COLORS`.
+ *
+ * Implemented as a mutable container (rather than threading a `palette`
+ * argument through every render function) to keep the diff small. Safe because
+ * a single card instance renders synchronously start-to-finish.
+ */
+let COLORS = { ...DEFAULT_COLORS };
+
+/**
+ * Merge user-supplied color overrides over the defaults and update the
+ * module-level COLORS cache. Only known keys are accepted — unknown keys are
+ * silently ignored to prevent typos from leaking into the palette.
+ *
+ * Returns the resolved palette as well, in case a caller wants a snapshot.
+ */
+function resolveColors(userColors) {
+  const out = { ...DEFAULT_COLORS };
+  if (userColors && typeof userColors === "object") {
+    for (const k of Object.keys(DEFAULT_COLORS)) {
+      const v = userColors[k];
+      if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    }
+  }
+  COLORS = out;
+  return out;
+}
 
 const SEPARATOR_DEFAULT_COLORS = ["#06b6d4", "#a855f7", "#ec4899"];
 const SEPARATOR_DEFAULT_ICONS = ["pool", "water-boiler", "car-electric"];
@@ -171,6 +206,7 @@ function normalizeConfig(raw) {
     title: raw.title || "",
 
     solar: {
+      enabled: raw.solar?.enabled !== false, // default true; only false disables
       power_entity: raw.solar?.power_entity,
       energy_today_entity: raw.solar?.energy_today_entity,
       production_threshold_w: safeFloat(
@@ -222,21 +258,27 @@ function normalizeConfig(raw) {
     generator: normalizeGenerator(raw.generator),
 
     load_separators: normalizeSeparators(raw.load_separators),
+
+    // User color overrides. Validated per-render by resolveColors(); we just
+    // pass through whatever the user gave us here.
+    colors: raw.colors && typeof raw.colors === "object" ? { ...raw.colors } : {},
   };
 
   // Validate required entities — without solar+battery+grid+load we can't really
   // render a meaningful flow. Allow partial setups but warn on console.
+  // Solar entity is only required when solar is enabled.
   const required = [
-    cfg.solar.power_entity,
     cfg.battery.power_entity,
     cfg.battery.soc_entity,
     cfg.grid.power_entity,
     cfg.load.power_entity,
   ];
+  if (cfg.solar.enabled) required.unshift(cfg.solar.power_entity);
   if (required.some((e) => !e)) {
     console.warn(
       "[power-flow-card] Some core entities are missing; card will degrade gracefully:",
-      { solar: cfg.solar.power_entity, battery_power: cfg.battery.power_entity,
+      { solar_enabled: cfg.solar.enabled, solar: cfg.solar.power_entity,
+        battery_power: cfg.battery.power_entity,
         battery_soc: cfg.battery.soc_entity, grid: cfg.grid.power_entity,
         load: cfg.load.power_entity }
     );
@@ -294,8 +336,10 @@ function collectWatchedEntities(cfg) {
   const ids = new Set();
   const add = (e) => e && ids.add(e);
 
-  add(cfg.solar.power_entity);
-  add(cfg.solar.energy_today_entity);
+  if (cfg.solar.enabled) {
+    add(cfg.solar.power_entity);
+    add(cfg.solar.energy_today_entity);
+  }
 
   add(cfg.battery.power_entity);
   add(cfg.battery.soc_entity);
@@ -347,8 +391,15 @@ function collectWatchedEntities(cfg) {
  * keeps the renderers pure.
  */
 function deriveState(hass, cfg) {
-  const pv = getStateFloat(hass, cfg.solar.power_entity);
-  const pvToday = getStateFloat(hass, cfg.solar.energy_today_entity);
+  // When solar is disabled, force its values to 0 regardless of whatever
+  // entity is configured. This means downstream flow detection (solarOn,
+  // contribution mix) treats it as not present.
+  const pv = cfg.solar.enabled
+    ? getStateFloat(hass, cfg.solar.power_entity)
+    : 0;
+  const pvToday = cfg.solar.enabled
+    ? getStateFloat(hass, cfg.solar.energy_today_entity)
+    : 0;
 
   const batt = getStateFloat(hass, cfg.battery.power_entity);
   const soc = getStateFloat(hass, cfg.battery.soc_entity);
@@ -427,7 +478,7 @@ function deriveState(hass, cfg) {
   const Tb = DEFAULTS.battery_flow_threshold_w;
   const Tl = DEFAULTS.load_threshold_w;
 
-  const solarOn = pv > cfg.solar.production_threshold_w;
+  const solarOn = cfg.solar.enabled && pv > cfg.solar.production_threshold_w;
   const battCharging = batt > Tb;
   const battDischarging = batt < -Tb;
   const gridOff = gridV < cfg.grid.voltage_threshold;
@@ -567,9 +618,9 @@ const SVG_ICONS = {
       <line x1="8"  y1="30" x2="72" y2="30" stroke="${cSol}66"/>
       <line x1="8"  y1="46" x2="72" y2="46" stroke="${cSol}66"/>
       <rect x="8" y="14" width="64" height="44" rx="3" fill="${cSol}" opacity="${solarOn ? 0.18 : 0.05}"/>
-      <circle cx="40" cy="6" r="4" fill="${solarOn ? "#fbbf24" : "#475569"}"/>
+      <circle cx="40" cy="6" r="4" fill="${solarOn ? COLORS.solar : "#475569"}"/>
       ${solarOn ? `
-        <circle cx="40" cy="6" r="6" fill="none" stroke="#fbbf24" stroke-width="1" opacity="0.5">
+        <circle cx="40" cy="6" r="6" fill="none" stroke="${COLORS.solar}" stroke-width="1" opacity="0.5">
           <animate attributeName="r" values="4;9;4" dur="2s" repeatCount="indefinite"/>
           <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite"/>
         </circle>` : ""}
@@ -949,14 +1000,16 @@ function renderFlowLines(s, c, cfg) {
 
   return `
     <svg class="flow" viewBox="0 0 500 460" preserveAspectRatio="none">
-      ${flowLine(250, 116, 250, 196, s.solarOn, false, c.cSol)}
+      ${cfg.solar.enabled
+        ? flowLine(250, 116, 250, 196, s.solarOn, false, c.cSol)
+        : ""}
       ${flowLine(124, 230, 206, 230, s.gridImporting || s.gridExporting, s.gridExporting, c.cGrd)}
       ${flowLine(294, 230, 376, 230, s.loadOn, false, c.cLoad)}
       ${s.battCharging
         ? flowLineSegmented(250, 274, 250, 344, battSegments, false)
         : flowLine(250, 274, 250, 344, s.battDischarging, s.battDischarging, c.cBat)}
       ${genLine}
-      ${bolts}
+      ${cfg.solar.enabled ? bolts : ""}
     </svg>
   `;
 }
@@ -999,7 +1052,7 @@ function renderEnergyFooter(s, c, cfg) {
   // get blank columns. Generator total is the 7th column only when enabled.
   const cells = [];
 
-  if (cfg.solar.energy_today_entity) {
+  if (cfg.solar.enabled && cfg.solar.energy_today_entity) {
     cells.push({ l: "PV TODAY", v: fmtEnergy(s.pvToday), color: c.cSol });
   }
   if (cfg.load.energy_today_entity) {
@@ -1038,16 +1091,20 @@ function renderEnergyFooter(s, c, cfg) {
  */
 function renderCard(hass, cfg) {
   if (!hass) return `<div class="pfc"><div class="pfc-title">Loading…</div></div>`;
+  // Resolve user color overrides over the defaults BEFORE deriving state or
+  // computing flow colors — every renderer below reads from the resolved
+  // COLORS palette.
+  resolveColors(cfg.colors);
   const s = deriveState(hass, cfg);
   const c = computeColors(s, cfg);
   return `
     <style>${renderCss(c.cInv)}</style>
     <div class="pfc">
       ${cfg.title ? `<div class="pfc-title">${esc(cfg.title.toUpperCase())}</div>` : ""}
-      ${renderSolarArc(s.solarOn)}
+      ${cfg.solar.enabled ? renderSolarArc(s.solarOn) : ""}
       <div class="pfc-main">
         ${renderFlowLines(s, c, cfg)}
-        ${renderSolarNode(s, c)}
+        ${cfg.solar.enabled ? renderSolarNode(s, c) : ""}
         ${renderGridNode(s, c, cfg)}
         ${cfg.generator.enabled ? renderGeneratorNode(s, c) : ""}
         ${renderLoadNode(s, c)}
@@ -1239,7 +1296,8 @@ class PowerFlowCardEditor extends HTMLElement {
         title: "Solar",
         icon: "mdi:solar-power",
         schema: [
-          { name: "power_entity", required: true, selector: entity("sensor") },
+          { name: "enabled", selector: { boolean: {} } },
+          { name: "power_entity", selector: optionalEntity("sensor") },
           { name: "energy_today_entity", selector: optionalEntity("sensor") },
           { name: "production_threshold_w", selector: { number: { min: 0, max: 1000, step: 10, unit_of_measurement: "W", mode: "box" } } },
         ],
@@ -1333,6 +1391,32 @@ class PowerFlowCardEditor extends HTMLElement {
       ...this._separatorSchema(1, "First load separator (e.g. pool)"),
       ...this._separatorSchema(2, "Second load separator (e.g. geyser)"),
       ...this._separatorSchema(3, "Third load separator (e.g. EV charger)"),
+
+      {
+        name: "colors",
+        type: "expandable",
+        title: "Custom colors (optional)",
+        icon: "mdi:palette",
+        schema: [
+          // Subset of the most-tweaked palette entries. Users wanting more
+          // control can edit the full set via YAML — see README for the full
+          // list of overridable keys.
+          { name: "solar", selector: { color_rgb: {} } },
+          { name: "battery_charging", selector: { color_rgb: {} } },
+          { name: "battery_low_dis", selector: { color_rgb: {} } },
+          { name: "battery_med_dis", selector: { color_rgb: {} } },
+          { name: "battery_high_dis", selector: { color_rgb: {} } },
+          { name: "grid_import", selector: { color_rgb: {} } },
+          { name: "grid_export", selector: { color_rgb: {} } },
+          { name: "grid_off", selector: { color_rgb: {} } },
+          { name: "load_low", selector: { color_rgb: {} } },
+          { name: "load_med", selector: { color_rgb: {} } },
+          { name: "load_high", selector: { color_rgb: {} } },
+          { name: "load_max", selector: { color_rgb: {} } },
+          { name: "generator", selector: { color_rgb: {} } },
+          { name: "idle", selector: { color_rgb: {} } },
+        ],
+      },
     ];
   }
 
@@ -1386,6 +1470,18 @@ class PowerFlowCardEditor extends HTMLElement {
       };
     });
 
+    // Colors section: convert any hex strings the user has saved into the RGB
+    // arrays the color_rgb selector expects. Leave unset keys absent so the
+    // form shows them as not-set rather than defaulting to black.
+    if (cfg.colors && typeof cfg.colors === "object") {
+      const formColors = {};
+      for (const [k, v] of Object.entries(cfg.colors)) {
+        const rgb = this._hexToRgb(v);
+        if (rgb) formColors[k] = rgb;
+      }
+      data.colors = formColors;
+    }
+
     return data;
   }
 
@@ -1424,6 +1520,21 @@ class PowerFlowCardEditor extends HTMLElement {
       delete cfg[`separator_${n}`];
     });
     if (seps.length) cfg.load_separators = seps;
+
+    // Colors section: convert RGB arrays back to hex strings for persistence.
+    // Strip out any keys the user reset to undefined so we don't write empties.
+    if (data.colors && typeof data.colors === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(data.colors)) {
+        if (Array.isArray(v) && v.length === 3) {
+          out[k] = this._rgbToHex(v);
+        } else if (typeof v === "string" && v.trim()) {
+          out[k] = v.trim();
+        }
+      }
+      if (Object.keys(out).length) cfg.colors = out;
+      else delete cfg.colors;
+    }
 
     return cfg;
   }
@@ -1500,6 +1611,21 @@ class PowerFlowCardEditor extends HTMLElement {
       l1_power_entity: "L1 power", l1_voltage_entity: "L1 voltage", l1_current_entity: "L1 current",
       l2_power_entity: "L2 power", l2_voltage_entity: "L2 voltage", l2_current_entity: "L2 current",
       l3_power_entity: "L3 power", l3_voltage_entity: "L3 voltage", l3_current_entity: "L3 current",
+      // Color override labels — readable names for the palette keys
+      solar: "Solar",
+      battery_charging: "Battery — charging",
+      battery_low_dis: "Battery — light discharge (≤1 kW)",
+      battery_med_dis: "Battery — medium discharge (≤2.5 kW)",
+      battery_high_dis: "Battery — heavy discharge (>2.5 kW)",
+      grid_import: "Grid — importing",
+      grid_export: "Grid — exporting",
+      grid_off: "Grid — offline",
+      load_low: "Load — low (≤40%)",
+      load_med: "Load — medium (≤60%)",
+      load_high: "Load — high (≤80%)",
+      load_max: "Load — peak (>80%)",
+      generator: "Generator",
+      idle: "Idle (no flow)",
     };
     return map[name] || name;
   }

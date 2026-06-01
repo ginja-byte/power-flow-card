@@ -380,7 +380,115 @@ console.log("\n=== Scenario 9: watched entity collection ===");
   assert("non-configured entity not watched", !watched.has("sensor.random"));
 }
 
-console.log("\n=== Scenario 10: PowerFlowCard custom element lifecycle ===");
+console.log("\n=== Scenario 10a: solar disabled — battery + grid only setup ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { enabled: false },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+  });
+  assert("solar.enabled is false", cfg.solar.enabled === false);
+  const hass = makeHass({
+    "sensor.batt": -800, "sensor.soc": 65,
+    "sensor.grid": 1200, "sensor.grid_v": 230, "sensor.load": 2000,
+  });
+  const state = api.deriveState(hass, cfg);
+  assert("pv forced to 0 when solar disabled",     state.pv === 0);
+  assert("solarOn false when solar disabled",     !state.solarOn);
+  const html = api.renderCard(hass, cfg);
+  notContains(html, '<div class="pfc-arc"', "no solar arc rendered when solar disabled");
+  notContains(html, "SOLAR",                "no SOLAR label when solar disabled");
+  notContains(html, "PV TODAY",             "no PV TODAY footer cell when solar disabled");
+  contains(html, "GRID",                    "still renders GRID");
+  contains(html, "BATTERY",                 "still renders BATTERY");
+  contains(html, "LOAD",                    "still renders LOAD");
+}
+
+console.log("\n=== Scenario 10b: solar enabled but power_entity not set ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { enabled: true }, // enabled but no entity — should not crash
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+  });
+  assert("solar.enabled defaults to true",        cfg.solar.enabled === true);
+  const hass = makeHass({
+    "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 500, "sensor.grid_v": 230, "sensor.load": 600,
+  });
+  const html = api.renderCard(hass, cfg);
+  contains(html, "SOLAR",                          "renders SOLAR when enabled even without entity");
+  assert("doesn't crash with missing solar entity", html.length > 0);
+}
+
+console.log("\n=== Scenario 11: user color overrides ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    colors: {
+      solar:            "#ff00aa",   // bright pink — should appear in render
+      battery_charging: "#00ffaa",
+      grid_import:      "#aabbcc",
+      load_low:         "#deadbe",
+      generator:        "#ffffff",   // even though generator not enabled
+    },
+  });
+  assert("colors block passed through normalizeConfig", cfg.colors && cfg.colors.solar === "#ff00aa");
+  const hass = makeHass({
+    "sensor.pv": 3000, "sensor.batt": 1000, "sensor.soc": 70,
+    "sensor.grid": 200, "sensor.grid_v": 230, "sensor.load": 1500,
+  });
+  const html = api.renderCard(hass, cfg);
+  contains(html, "#ff00aa", "user solar color appears in rendered output");
+  contains(html, "#00ffaa", "user battery_charging color appears in rendered output");
+  contains(html, "#aabbcc", "user grid_import color appears in rendered output");
+  // Note: #fbbf24 is the default for both 'solar' AND 'battery_low_dis' AND
+  // 'load_med' — we only overrode 'solar', so the other two still legitimately
+  // produce that hex. So instead, check that the SOLAR section uses the new
+  // color by looking for it in the solar panel SVG render.
+  contains(html, `fill="#ff00aa"`,    "overridden solar color used as a fill attribute");
+  contains(html, `stroke="#ff00aa"`,  "overridden solar color used as a stroke attribute");
+}
+
+console.log("\n=== Scenario 12: invalid color values silently ignored ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    colors: {
+      solar: 42,            // not a string — should be ignored, default used
+      battery_charging: "", // empty string — should be ignored
+      idle: "  #336699  ",  // valid with whitespace — trimmed
+      bogus_key: "#aaaaaa", // unknown key — silently dropped
+    },
+  });
+  // Producing state so solar color is actually used
+  const hass = makeHass({
+    "sensor.pv": 3000, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 1000,
+  });
+  const html = api.renderCard(hass, cfg);
+  contains(html, "#fbbf24",   "default solar color still used when override is non-string");
+  contains(html, "#336699",   "valid override with whitespace is applied");
+  notContains(html, "#aaaaaa","unknown color key is not introduced into render");
+}
+
+console.log("\n=== Scenario 13: PowerFlowCard custom element lifecycle ===");
 {
   const card = new api.PowerFlowCard();
   card.setConfig({
