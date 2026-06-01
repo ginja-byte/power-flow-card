@@ -1,0 +1,8 @@
+{
+  "name": "Power Flow Card",
+  "filename": "power-flow-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.6.0",
+  "zip_release": false,
+  "hacs": "2.0.0"
+}
