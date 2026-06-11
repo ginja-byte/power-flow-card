@@ -195,29 +195,69 @@ A per-phase detail panel appears below the main flow. Grid-off detection uses th
 
 ### Load separators
 
-Up to three "downstream" loads that you want to see broken out from the total house load (the values are not subtracted — they're just shown alongside). Common examples: pool pump, geyser, EV charger.
+Up to three "downstream" loads that you want to see broken out from the total house load. Common examples: pool pump, geyser, EV charger, washing machine. The values are not subtracted from the total house load — they're shown alongside as sub-loads of the home.
 
 ```yaml
 load_separators:
   - name: Pool
     power_entity: sensor.pool_pump_power
-    icon: pool                    # any mdi icon name without the "mdi:" prefix
+    icon: pool                 # animated; see icon set below
     color: "#06b6d4"
     threshold_w: 5
   - name: Geyser
     power_entity: sensor.geyser_power
-    icon: water-boiler
+    icon: geyser
     color: "#ef4444"
     threshold_w: 50
   - name: EV
     power_entity: sensor.ev_charger_power
     energy_today_entity: sensor.ev_charger_today
-    icon: car-electric
+    icon: ev
     color: "#a855f7"
     threshold_w: 100
 ```
 
-A chip row appears under the main flow showing each separator with on/off styling.
+**Layout — adaptive to count:**
+
+- **1 separator** → sits at top-right alongside the solar node, with a vertical animated flow line connecting it down to the house load.
+- **2 separators** → first one at top-right (alongside solar); second one centered below the load with a straight animated flow line from load down to it.
+- **3 separators** → first at top-right; second and third below the load with a **tee/branch** pattern — a single stem from the load splits left/right to flank the load column.
+
+When solar is disabled, the top-right slot doesn't exist, so all separators move below the load and the card grows vertically to fit them.
+
+**Animated icons (built-in for v0.3.0):**
+
+The following icon names trigger a custom animated SVG instead of the generic MDI icon:
+
+| Icon name | Animation when on |
+|---|---|
+| `pool` | Rippling water surface with filter pump |
+| `geyser` | Heating coil + rising steam wisps |
+| `ev` | Car silhouette with pulsing lightning bolt |
+| `washing_machine` | Rotating drum |
+| `dryer` | Rotating drum + heat indicator |
+| `dishwasher` | Spray jets above and below |
+| `oven` | Flickering flames at base |
+| `heater` | Heating bars + rising heat waves |
+| `aircon` | Split unit with cold breeze swirls |
+| `lights` | Lightbulb with radiating rays |
+| `fridge` | Pulsing cold-status indicator |
+
+**Common aliases also map to animated icons:**
+
+| You wrote | Resolves to |
+|---|---|
+| `water-boiler` | `geyser` |
+| `car-electric`, `ev-station`, `ev-charger` | `ev` |
+| `washingmachine`, `washer` | `washing_machine` |
+| `air-conditioner`, `ac` | `aircon` |
+| `light`, `lightbulb` | `lights` |
+| `stove` | `oven` |
+| `refrigerator` | `fridge` |
+
+**Anything else** falls back to a regular `<ha-icon icon="mdi:...">` (so `robot-vacuum`, `washing-machine` MDI, anything else from materialdesignicons.com still works — just without animation).
+
+**Visual editor:** the separator section has an "Animated icon" dropdown listing all 11 named animations. Leave it blank if you want to use an MDI icon from the "Icon" picker below it.
 
 ### Inverter mode display
 
@@ -315,12 +355,12 @@ The card extracts shorthand from values like `Solar/Battery/Utility (SBU)` → s
 
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `name` | string | no | `Load N` | Display name |
+| `name` | string | no | `Load N` | Display name shown above the icon |
 | `power_entity` | string | yes | — | Power in W |
-| `energy_today_entity` | string | no | — | kWh today |
-| `icon` | string | no | `pool`/`water-boiler`/`car-electric` | mdi icon name (no `mdi:` prefix) |
-| `color` | string | no | cyan / purple / pink | Hex color `#RRGGBB` |
-| `threshold_w` | number | no | `5` | Power above this = on |
+| `energy_today_entity` | string | no | — | kWh today (shown below value when separator is on) |
+| `icon` | string | no | — | Built-in animated icon name (e.g. `pool`, `geyser`, `ev`) OR an mdi icon name (no `mdi:` prefix) as fallback. See [Load separators](#load-separators) for the full set. |
+| `color` | string | no | cyan / purple / pink | Hex color `#RRGGBB` — applies to icon and flow line |
+| `threshold_w` | number | no | `5` | Power above this = on (animated). Below = off (dimmed icon, OFF label) |
 
 ## Sign conventions cheat sheet
 
@@ -353,6 +393,12 @@ Caused by other dashboard cards triggering frequent re-renders. The card re-rend
 You haven't configured the inverter section, or the configured entity is unavailable. Both fields are optional — the box just shows a dash when unset.
 
 ## Changelog
+
+### v0.3.0
+- **Load separators are now positioned nodes** instead of a chip row at the bottom. The first separator sits at top-right alongside solar (when solar is enabled); the second and third sit below the load with a tee/branch animated flow line connecting them. Layout adapts to count (1, 2, or 3 separators).
+- **Built-in animated SVG icons** for: `pool`, `geyser`, `ev`, `washing_machine`, `dryer`, `dishwasher`, `oven`, `heater`, `aircon`, `lights`, `fridge`. Each animates when the separator is on (rippling water, spinning drums, flickering flames, etc.). Common aliases like `water-boiler` → `geyser`, `car-electric` → `ev` are auto-resolved.
+- **Fallback to MDI icons** preserved — if your icon name isn't in the animated set, the card renders `<ha-icon icon="mdi:...">` like v0.2.x did. Existing configs using `water-boiler`, `car-electric`, etc. now automatically get animated icons; no config changes needed.
+- **Visual editor:** new "Animated icon" dropdown lists all 11 named animations. Leave blank to use the MDI icon picker as before.
 
 ### v0.2.1
 - **Card shrinks when solar is disabled.** Removing the solar node previously left an empty top half — the layout now uses a shorter aspect ratio and repositions grid / load / inverter / battery to fill the available space. No change for solar-enabled setups.

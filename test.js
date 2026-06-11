@@ -58,10 +58,13 @@ module.exports = {
   deriveState,
   computeColors,
   computeBatteryEta,
+  computeLayout,
   renderCard,
   PowerFlowCard,
   PowerFlowCardEditor,
   collectWatchedEntities,
+  resolveAnimatedIcon,
+  ANIMATED_SEP_ICONS,
 };
 `;
 
@@ -151,8 +154,8 @@ console.log("\n=== Scenario 1: typical daytime — solar producing, battery char
   contains(html, "SBU",        "extracts inverter output source shorthand");
   contains(html, "SO",         "extracts inverter charger source shorthand");
   notContains(html, "GEN TODAY", "no generator footer column when disabled");
-  notContains(html, '<div class="pfc-seps"',  "no separators div when none configured");
-  notContains(html, '<div class="pfc-phases"',"no 3-phase panel when disabled");
+  notContains(html, '<div class="pfc-sep-node', "no separator nodes when none configured");
+  notContains(html, '<div class="pfc-phases"',  "no 3-phase panel when disabled");
 }
 
 console.log("\n=== Scenario 2: night — solar off, battery discharging, grid importing ===");
@@ -301,11 +304,22 @@ console.log("\n=== Scenario 6: three load separators (pool, geyser, EV) ===");
   assert("geyser detected off",  !state.separators[1].on);
   assert("EV detected on",       state.separators[2].on);
   const html = api.renderCard(hass, cfg);
-  contains(html, '<div class="pfc-seps"', "renders separators row");
+  contains(html, '<div class="pfc-sep-node ', "renders separator nodes (new positioned style)");
+  notContains(html, '<div class="pfc-seps"',  "old chip-row container removed");
   contains(html, "POOL",     "renders pool name");
   contains(html, "GEYSER",   "renders geyser name");
   contains(html, "EV",       "renders EV name");
-  contains(html, "mdi:pool", "renders pool icon");
+  // Pool icon: 'pool' is in our animated set, so MDI fallback is NOT used.
+  notContains(html, "mdi:pool", "pool uses animated SVG, not MDI fallback");
+  // Geyser icon: 'water-boiler' is aliased to animated geyser, so also no MDI.
+  notContains(html, "mdi:water-boiler", "water-boiler aliased to animated geyser");
+  // EV icon: 'car-electric' aliased to animated ev.
+  notContains(html, "mdi:car-electric", "car-electric aliased to animated ev");
+  // Confirm the animated SVG markers are present (look for the EV lightning bolt path)
+  contains(html, 'M40 12 L34 24', "ev lightning bolt animation rendered when on");
+  // Confirm three separator nodes are positioned (at sep1/sep2/sep3 layout slots)
+  const sepNodeMatches = html.match(/<div class="pfc-sep-node /g) || [];
+  assert("renders exactly 3 separator nodes", sepNodeMatches.length === 3);
 }
 
 console.log("\n=== Scenario 7: missing optional entities — should not crash ===");
@@ -514,6 +528,164 @@ console.log("\n=== Scenario 12: invalid color values silently ignored ===");
   contains(html, "#fbbf24",   "default solar color still used when override is non-string");
   contains(html, "#336699",   "valid override with whitespace is applied");
   notContains(html, "#aaaaaa","unknown color key is not introduced into render");
+}
+
+console.log("\n=== Scenario 12a: 1 separator → only sep1 at top-right (tall) ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Pool", power_entity: "sensor.pool", icon: "pool", color: "#06b6d4", threshold_w: 5 },
+    ],
+  });
+  const layout = api.computeLayout(cfg);
+  assert("layout has sep1 slot",          !!layout.nodes.sep1);
+  assert("layout has no sep2",            !layout.nodes.sep2);
+  assert("layout has no sep3",            !layout.nodes.sep3);
+  assert("layout has sep1 flow line",     !!layout.flow.loadToSep1);
+  assert("layout has no below-load flow", !layout.flow.loadStem && !layout.flow.loadToSep2Straight);
+
+  const hass = makeHass({
+    "sensor.pv": 0, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 100, "sensor.grid_v": 230, "sensor.load": 800,
+    "sensor.pool": 720,
+  });
+  const html = api.renderCard(hass, cfg);
+  const sepNodeMatches = html.match(/<div class="pfc-sep-node /g) || [];
+  assert("renders exactly 1 separator node", sepNodeMatches.length === 1);
+  contains(html, "POOL", "pool label rendered");
+}
+
+console.log("\n=== Scenario 12b: 2 separators → sep1 + sep2 centered (straight line) ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Pool", power_entity: "sensor.pool", icon: "pool", color: "#06b6d4" },
+      { name: "EV",   power_entity: "sensor.ev",   icon: "ev",   color: "#a855f7" },
+    ],
+  });
+  const layout = api.computeLayout(cfg);
+  assert("sep1 slot",                  !!layout.nodes.sep1);
+  assert("sep2 slot",                  !!layout.nodes.sep2);
+  assert("no sep3 slot",               !layout.nodes.sep3);
+  assert("straight flow line",         !!layout.flow.loadToSep2Straight);
+  assert("no tee/branch",              !layout.flow.loadStem);
+  // sep2 should be centered under load (same left% as load)
+  assert("sep2 centered under load",   layout.nodes.sep2.left === "84%");
+}
+
+console.log("\n=== Scenario 12c: 3 separators → sep1 + tee/branch with sep2/sep3 ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Pool", power_entity: "sensor.pool", icon: "pool",   color: "#06b6d4" },
+      { name: "EV",   power_entity: "sensor.ev",   icon: "ev",     color: "#a855f7" },
+      { name: "Geyser", power_entity: "sensor.geyser", icon: "geyser", color: "#ef4444" },
+    ],
+  });
+  const layout = api.computeLayout(cfg);
+  assert("all three sep slots",        !!layout.nodes.sep1 && !!layout.nodes.sep2 && !!layout.nodes.sep3);
+  assert("tee/branch flow present",    !!layout.flow.loadStem && !!layout.flow.branchBar);
+  assert("sep2 left of load center",   parseFloat(layout.nodes.sep2.left) < 84);
+  assert("sep3 right of load center",  parseFloat(layout.nodes.sep3.left) > 84);
+}
+
+console.log("\n=== Scenario 12d: MDI fallback when icon not in animated set ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Robot", power_entity: "sensor.robot", icon: "robot-vacuum", color: "#06b6d4" },
+    ],
+  });
+  const hass = makeHass({
+    "sensor.pv": 0, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 200,
+    "sensor.robot": 80,
+  });
+  const html = api.renderCard(hass, cfg);
+  contains(html, "mdi:robot-vacuum", "unknown icon falls back to ha-icon MDI");
+  contains(html, "ROBOT",            "renders separator name");
+}
+
+console.log("\n=== Scenario 12e: icon aliases — water-boiler → geyser ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Geyser", power_entity: "sensor.geyser", icon: "water-boiler", color: "#ef4444" },
+    ],
+  });
+  const hass = makeHass({
+    "sensor.pv": 0, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 200,
+    "sensor.geyser": 2400,
+  });
+  const html = api.renderCard(hass, cfg);
+  notContains(html, "mdi:water-boiler", "water-boiler aliased to animated geyser (no MDI fallback)");
+  // Animated geyser has steam circles
+  contains(html, 'cx="22" cy="6"', "geyser steam circle present (animated icon)");
+}
+
+console.log("\n=== Scenario 12f: separator off shows OFF, on shows power ===");
+{
+  const cfg = api.normalizeConfig({
+    type: "custom:power-flow-card",
+    solar: { power_entity: "sensor.pv" },
+    battery: { power_entity: "sensor.batt", soc_entity: "sensor.soc", capacity_kwh: 10, min_soc_percent: 20 },
+    grid: { power_entity: "sensor.grid", voltage_entity: "sensor.grid_v" },
+    load: { power_entity: "sensor.load" },
+    inverter: {},
+    load_separators: [
+      { name: "Pool", power_entity: "sensor.pool", icon: "pool", color: "#06b6d4", threshold_w: 5 },
+    ],
+  });
+  // Off
+  const hassOff = makeHass({
+    "sensor.pv": 0, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 100,
+    "sensor.pool": 0,
+  });
+  const htmlOff = api.renderCard(hassOff, cfg);
+  contains(htmlOff, ">OFF<",         "OFF label rendered when separator off");
+  contains(htmlOff, "pfc-sep-node off", "off class applied");
+  // On
+  const hassOn = makeHass({
+    "sensor.pv": 0, "sensor.batt": 0, "sensor.soc": 50,
+    "sensor.grid": 0, "sensor.grid_v": 230, "sensor.load": 800,
+    "sensor.pool": 720,
+  });
+  const htmlOn = api.renderCard(hassOn, cfg);
+  notContains(htmlOn, ">OFF<",       "OFF label gone when separator on");
+  contains(htmlOn, "720 W",          "power value shown when on");
+  contains(htmlOn, "pfc-sep-node on","on class applied");
 }
 
 console.log("\n=== Scenario 13: PowerFlowCard custom element lifecycle ===");

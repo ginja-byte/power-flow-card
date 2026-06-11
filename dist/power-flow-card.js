@@ -10,7 +10,7 @@
  * License: MIT
  */
 
-const CARD_VERSION = "0.2.1";
+const CARD_VERSION = "0.3.0";
 const CARD_TAG = "power-flow-card";
 const EDITOR_TAG = "power-flow-card-editor";
 
@@ -623,18 +623,69 @@ function computeSunPosition() {
  * mode so the layout stays balanced.
  */
 function computeLayout(cfg) {
+  const sepCount = cfg.load_separators.length;
+  const hasSep1 = sepCount >= 1;          // top-right (alongside solar)
+  const belowLoadCount = Math.max(0, sepCount - 1); // 0–2 below load
+
   if (cfg.solar.enabled) {
-    // Tall layout — original v0.1.0 geometry, unchanged.
+    // ─── TALL layout (solar enabled) ──────────────────────────────────────
+    // viewBox is 500x460. sep1 at (84%, 16%) alongside solar; flow line is a
+    // straight vertical from load-top up to sep1-bottom. sep2/sep3 below load
+    // with a tee/branch flow pattern from load-bottom.
+    //
+    // When sep1 is the ONLY separator: just the top-right node + line.
+    // When 2 separators: sep1 + sep2 centered below load (straight line down).
+    // When 3 separators: sep1 + sep2/sep3 below load (tee/branch).
+
+    // Geometry for the below-load tee/branch (viewBox coords)
+    const loadX = 420, loadBottomY = 250;
+    const stemEndY = 305;              // vertical stem from load bottom
+    const branchY = 305;               // horizontal crossbar Y
+    const sep2X = 370, sep3X = 470;    // L/R positions of below-load nodes (aligns to 74%/94% in viewBox 500)
+                                       //   (match sep2/sep3 left% at 72%/92% of 500px)
+    const sepTopY = 339;               // where the down-branch meets sep node
+
+    const sepFlows = {};
+    if (hasSep1) {
+      // Top-right: from load top (y=210) up to sep1 bottom (y=100)
+      sepFlows.loadToSep1 = { x1: 420, y1: 210, x2: 420, y2: 100 };
+    }
+    if (belowLoadCount === 1) {
+      // Straight line down from load to centered sep below
+      sepFlows.loadToSep2Straight = { x1: 420, y1: loadBottomY, x2: 420, y2: sepTopY };
+    } else if (belowLoadCount === 2) {
+      // Tee/branch: stem + crossbar + two short downs
+      sepFlows.loadStem = { x1: loadX, y1: loadBottomY, x2: loadX, y2: stemEndY };
+      sepFlows.branchBar = { x1: sep2X, y1: branchY, x2: sep3X, y2: branchY };
+      sepFlows.sep2Down = { x1: sep2X, y1: branchY, x2: sep2X, y2: sepTopY };
+      sepFlows.sep3Down = { x1: sep3X, y1: branchY, x2: sep3X, y2: sepTopY };
+    }
+
+    // Node positions for separators
+    const sepNodes = {};
+    if (hasSep1) sepNodes.sep1 = { left: "84%", top: "16%" };
+    if (belowLoadCount === 1) {
+      // Single sep below load, centered under load
+      sepNodes.sep2 = { left: "84%", top: "78%" };
+    } else if (belowLoadCount === 2) {
+      // Two seps flanking the load column. sep3 pulled in from the right
+      // edge to prevent the node from overflowing the card boundary.
+      sepNodes.sep2 = { left: "72%", top: "78%" };
+      sepNodes.sep3 = { left: "92%", top: "78%" };
+    }
+
     return {
       mode: "tall",
       aspectRatio: "1/1.05",
       flowViewBox: "0 0 500 460",
+      sepCount,
       nodes: {
         solar:     { left: "50%", top: "14%" },
         grid:      { left: "16%", top: "50%" },
         generator: { left: "16%", top: "78%" },
         load:      { left: "84%", top: "50%" },
         battery:   { left: "50%", top: "84%" },
+        ...sepNodes,
       },
       inverter: { topPercent: 50 },
       flow: {
@@ -644,34 +695,87 @@ function computeLayout(cfg) {
         inverterToBatt:      { x1: 250, y1: 274, x2: 250, y2: 344 },
         generatorToInverter: { x1: 124, y1: 354, x2: 206, y2: 274 },
         boltsTransform:      "translate(250,120)",
+        ...sepFlows,
       },
     };
   }
 
-  // Short layout — solar zone removed. Canvas is ~62% of original height.
-  // Inverter sits near the upper-third with grid/load on its sides, battery
-  // below. Generator (when enabled) tucks into the lower-left.
+  // ─── SHORT layout (solar disabled) ──────────────────────────────────────
+  // viewBox 500x290 by default. Separators all go below load in this mode
+  // (no "alongside solar" position because solar is hidden). Card height
+  // grows when separators are configured to make room for them below load.
+
+  const hasAnySep = sepCount >= 1;
+  // Card grows from 0.65 to 0.95 aspect when separators are present, giving
+  // ~95px more of vertical room below the load row.
+  const aspectRatio = hasAnySep ? "1/0.95" : "1/0.65";
+  const flowViewBox = hasAnySep ? "0 0 500 425" : "0 0 500 290";
+
+  // Geometry (viewBox 500 × 425 when separators present):
+  //   - grid/inverter/load horizontal line moves up slightly to y=70
+  //   - inverter→battery line: 95 → 195 (battery at y=240 area)
+  //   - below-load tee/branch starts at load bottom y=90
+  //   - separator nodes at y ≈ 195 (about 46% of 425)
+  //   - battery moves down to y=55%-ish (e.g. 78% of card = 332)
+  // For consistency with the tall layout, I'll keep node positions in
+  // percentages of card height (which scales with the aspect ratio).
+
+  // Below-load tee/branch in short mode
+  const loadX = 420, loadBottomY = hasAnySep ? 92 : 100;
+  const stemEndY = hasAnySep ? 165 : 200;
+  const branchY = stemEndY;
+  const sep2X = 370, sep3X = 470;
+  const sepTopY = hasAnySep ? 200 : 235;
+
+  const sepFlows = {};
+  // In short mode there's no sep1 alongside solar. All separators are below load.
+  // 1 separator → straight line from load down
+  // 2 separators → tee/branch from load
+  // 3 separators → tee with a center-stem-extending node (rare; documented)
+  if (sepCount === 1) {
+    sepFlows.loadToSep2Straight = { x1: loadX, y1: loadBottomY, x2: loadX, y2: sepTopY };
+  } else if (sepCount >= 2) {
+    sepFlows.loadStem = { x1: loadX, y1: loadBottomY, x2: loadX, y2: stemEndY };
+    sepFlows.branchBar = { x1: sep2X, y1: branchY, x2: sep3X, y2: branchY };
+    sepFlows.sep2Down = { x1: sep2X, y1: branchY, x2: sep2X, y2: sepTopY };
+    sepFlows.sep3Down = { x1: sep3X, y1: branchY, x2: sep3X, y2: sepTopY };
+    if (sepCount === 3) {
+      // Third separator hangs off the center stem (cramped but works)
+      sepFlows.sep1CenterDown = { x1: loadX, y1: stemEndY, x2: loadX, y2: sepTopY };
+    }
+  }
+
+  const sepNodes = {};
+  if (sepCount === 1) {
+    sepNodes.sep2 = { left: "84%", top: "62%" };
+  } else if (sepCount === 2) {
+    sepNodes.sep2 = { left: "72%", top: "62%" };
+    sepNodes.sep3 = { left: "92%", top: "62%" };
+  } else if (sepCount === 3) {
+    sepNodes.sep2 = { left: "72%", top: "62%" };
+    sepNodes.sep1 = { left: "84%", top: "62%" }; // center-bottom of branch
+    sepNodes.sep3 = { left: "92%", top: "62%" };
+  }
+
   return {
     mode: "short",
-    aspectRatio: "1/0.65",
-    flowViewBox: "0 0 500 290",
+    aspectRatio,
+    flowViewBox,
+    sepCount,
     nodes: {
-      // No "solar" entry — render code already gates on cfg.solar.enabled
-      grid:      { left: "16%", top: "30%" },
-      generator: { left: "16%", top: "72%" },
-      load:      { left: "84%", top: "30%" },
-      battery:   { left: "50%", top: "78%" },
+      grid:      { left: "16%", top: hasAnySep ? "20%" : "30%" },
+      generator: { left: "16%", top: hasAnySep ? "82%" : "72%" },
+      load:      { left: "84%", top: hasAnySep ? "20%" : "30%" },
+      battery:   { left: "50%", top: hasAnySep ? "82%" : "78%" },
+      ...sepNodes,
     },
-    inverter: { topPercent: 30 },
+    inverter: { topPercent: hasAnySep ? 20 : 30 },
     flow: {
-      // Horizontal grid→inverter→load line is at y=80 (instead of 230)
-      gridToInverter:      { x1: 124, y1: 80, x2: 206, y2: 80 },
-      inverterToLoad:      { x1: 294, y1: 80, x2: 376, y2: 80 },
-      // Battery line is shorter — from inverter bottom (y=124) down to
-      // battery top (y=200)
-      inverterToBatt:      { x1: 250, y1: 124, x2: 250, y2: 200 },
-      // Generator approaches inverter from lower-left
-      generatorToInverter: { x1: 124, y1: 215, x2: 206, y2: 124 },
+      gridToInverter:      hasAnySep ? { x1: 124, y1: 70, x2: 206, y2: 70 } : { x1: 124, y1: 80, x2: 206, y2: 80 },
+      inverterToLoad:      hasAnySep ? { x1: 294, y1: 70, x2: 376, y2: 70 } : { x1: 294, y1: 80, x2: 376, y2: 80 },
+      inverterToBatt:      hasAnySep ? { x1: 250, y1: 95, x2: 250, y2: 320 } : { x1: 250, y1: 124, x2: 250, y2: 200 },
+      generatorToInverter: hasAnySep ? { x1: 124, y1: 340, x2: 206, y2: 95 } : { x1: 124, y1: 215, x2: 206, y2: 124 },
+      ...sepFlows,
     },
   };
 }
@@ -766,6 +870,247 @@ const SVG_ICONS = {
 };
 
 // ============================================================================
+// Animated load-separator icons
+//
+// Each entry is a function (color, on) => SVG string. The `on` flag controls
+// whether the animation is rendered; static base shape is shown either way.
+// Color is applied to strokes / accent fills; interior fill uses a neutral
+// dark slate so the icon reads against the card's dark background.
+//
+// Icon names are matched case-insensitively against the user's `icon:` config
+// value. Anything that doesn't match falls through to ha-icon (`mdi:<name>`),
+// preserving the v0.2.x behavior.
+// ============================================================================
+
+const ANIMATED_SEP_ICONS = {
+  pool: (color, on) => `
+    <svg viewBox="0 0 80 56" width="60" height="42">
+      <ellipse cx="40" cy="36" rx="32" ry="14" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <ellipse cx="40" cy="34" rx="28" ry="11" fill="${color}" opacity="${on ? 0.45 : 0.15}"/>
+      ${on ? `
+        <path d="M16 34 Q24 30 32 34 T48 34 T64 34" stroke="${color}" stroke-width="1.2" fill="none" opacity="0.85">
+          <animate attributeName="d"
+            values="M16 34 Q24 30 32 34 T48 34 T64 34;M16 34 Q24 38 32 34 T48 34 T64 34;M16 34 Q24 30 32 34 T48 34 T64 34"
+            dur="2s" repeatCount="indefinite"/>
+        </path>` : ""}
+      <circle cx="64" cy="14" r="6" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <path d="M60 14 L68 14 M64 10 L64 18" stroke="${color}" stroke-width="1"/>
+    </svg>`,
+
+  geyser: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <rect x="14" y="14" width="32" height="60" rx="6" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <rect x="18" y="10" width="24" height="6" rx="2" fill="${color}" opacity="${on ? 0.6 : 0.25}"/>
+      <rect x="18" y="22" width="24" height="48" fill="${color}" opacity="${on ? 0.25 : 0.12}"/>
+      <path d="M20 50 Q24 46 28 50 Q32 54 36 50 Q40 46 44 50" stroke="${color}" stroke-width="1.2" fill="none" opacity="${on ? 1 : 0.4}"/>
+      ${on ? `
+        <g opacity="0.6">
+          <circle cx="22" cy="6" r="1.5" fill="${color}">
+            <animate attributeName="cy" values="8;-4" dur="1.8s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;0.8;0" dur="1.8s" repeatCount="indefinite"/>
+          </circle>
+          <circle cx="30" cy="6" r="1.5" fill="${color}">
+            <animate attributeName="cy" values="8;-4" dur="1.8s" repeatCount="indefinite" begin="0.6s"/>
+            <animate attributeName="opacity" values="0;0.8;0" dur="1.8s" repeatCount="indefinite" begin="0.6s"/>
+          </circle>
+          <circle cx="38" cy="6" r="1.5" fill="${color}">
+            <animate attributeName="cy" values="8;-4" dur="1.8s" repeatCount="indefinite" begin="1.2s"/>
+            <animate attributeName="opacity" values="0;0.8;0" dur="1.8s" repeatCount="indefinite" begin="1.2s"/>
+          </circle>
+        </g>` : ""}
+    </svg>`,
+
+  ev: (color, on) => `
+    <svg viewBox="0 0 80 56" width="56" height="40">
+      <path d="M12 32 L20 22 L52 22 L60 32 L60 42 L12 42 Z" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <circle cx="22" cy="44" r="4" fill="${color}" opacity="0.7"/>
+      <circle cx="50" cy="44" r="4" fill="${color}" opacity="0.7"/>
+      <path d="M22 32 L26 24 L46 24 L50 32 Z" fill="${color}" opacity="0.3"/>
+      <line x1="60" y1="34" x2="68" y2="34" stroke="${color}" stroke-width="2"/>
+      <rect x="68" y="30" width="6" height="8" rx="1" fill="${color}" opacity="${on ? 1 : 0.4}"/>
+      ${on ? `
+        <path d="M40 12 L34 24 L40 24 L34 36" stroke="${color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <animate attributeName="opacity" values="0.3;1;0.3" dur="1s" repeatCount="indefinite"/>
+        </path>` : ""}
+    </svg>`,
+
+  washing_machine: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <rect x="8" y="10" width="44" height="60" rx="4" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="14" y1="18" x2="46" y2="18" stroke="${color}" stroke-width="0.8" opacity="0.6"/>
+      <circle cx="44" cy="22" r="1.5" fill="${color}"/>
+      <circle cx="30" cy="44" r="14" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <circle cx="30" cy="44" r="10" fill="${color}" opacity="${on ? 0.3 : 0.15}"/>
+      ${on ? `
+        <g style="transform-origin:30px 44px;animation:pfc-spin 3s linear infinite;">
+          <circle cx="30" cy="36" r="2" fill="${color}" opacity="0.8"/>
+          <circle cx="38" cy="44" r="2" fill="${color}" opacity="0.8"/>
+          <circle cx="30" cy="52" r="2" fill="${color}" opacity="0.8"/>
+          <circle cx="22" cy="44" r="2" fill="${color}" opacity="0.8"/>
+        </g>` : ""}
+    </svg>`,
+
+  heater: (color, on) => `
+    <svg viewBox="0 0 80 80" width="56" height="56">
+      <rect x="14" y="40" width="52" height="32" rx="4" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="20" y1="48" x2="60" y2="48" stroke="${color}" stroke-width="1" opacity="${on ? 1 : 0.4}"/>
+      <line x1="20" y1="54" x2="60" y2="54" stroke="${color}" stroke-width="1" opacity="${on ? 1 : 0.4}"/>
+      <line x1="20" y1="60" x2="60" y2="60" stroke="${color}" stroke-width="1" opacity="${on ? 1 : 0.4}"/>
+      <line x1="20" y1="66" x2="60" y2="66" stroke="${color}" stroke-width="1" opacity="${on ? 1 : 0.4}"/>
+      ${on ? `
+        <g opacity="0.7">
+          <path d="M24 38 Q24 30 28 30 Q32 30 32 22" stroke="${color}" stroke-width="1.2" fill="none">
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" repeatCount="indefinite"/>
+          </path>
+          <path d="M40 38 Q40 30 44 30 Q48 30 48 22" stroke="${color}" stroke-width="1.2" fill="none">
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" repeatCount="indefinite" begin="0.7s"/>
+          </path>
+          <path d="M56 38 Q56 30 60 30 Q64 30 64 22" stroke="${color}" stroke-width="1.2" fill="none">
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" repeatCount="indefinite" begin="1.3s"/>
+          </path>
+        </g>` : ""}
+    </svg>`,
+
+  aircon: (color, on) => `
+    <svg viewBox="0 0 80 50" width="60" height="38">
+      <rect x="8" y="14" width="64" height="22" rx="3" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="12" y1="20" x2="68" y2="20" stroke="${color}" stroke-width="0.8" opacity="0.5"/>
+      <line x1="12" y1="24" x2="68" y2="24" stroke="${color}" stroke-width="0.8" opacity="0.5"/>
+      <circle cx="62" cy="30" r="1.5" fill="${color}" opacity="${on ? 1 : 0.3}"/>
+      ${on ? `
+        <g opacity="0.6">
+          <path d="M20 38 Q24 42 20 46" stroke="${color}" stroke-width="1" fill="none" stroke-linecap="round">
+            <animate attributeName="opacity" values="0;0.9;0" dur="1.5s" repeatCount="indefinite"/>
+          </path>
+          <path d="M36 38 Q40 42 36 46" stroke="${color}" stroke-width="1" fill="none" stroke-linecap="round">
+            <animate attributeName="opacity" values="0;0.9;0" dur="1.5s" repeatCount="indefinite" begin="0.5s"/>
+          </path>
+          <path d="M52 38 Q56 42 52 46" stroke="${color}" stroke-width="1" fill="none" stroke-linecap="round">
+            <animate attributeName="opacity" values="0;0.9;0" dur="1.5s" repeatCount="indefinite" begin="1s"/>
+          </path>
+        </g>` : ""}
+    </svg>`,
+
+  dishwasher: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <rect x="8" y="10" width="44" height="60" rx="3" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="12" y1="18" x2="48" y2="18" stroke="${color}" stroke-width="0.8" opacity="0.5"/>
+      <rect x="12" y="22" width="36" height="44" rx="2" fill="#1e293b" stroke="${color}" stroke-width="1"/>
+      <line x1="12" y1="40" x2="48" y2="40" stroke="${color}" stroke-width="0.5" opacity="0.4"/>
+      ${on ? `
+        <g opacity="0.7">
+          <path d="M30 30 L26 38 M30 30 L34 38 M30 30 L22 36 M30 30 L38 36"
+                stroke="${color}" stroke-width="1" stroke-linecap="round">
+            <animate attributeName="opacity" values="0.3;0.95;0.3" dur="1s" repeatCount="indefinite"/>
+          </path>
+          <path d="M30 56 L26 48 M30 56 L34 48 M30 56 L22 50 M30 56 L38 50"
+                stroke="${color}" stroke-width="1" stroke-linecap="round">
+            <animate attributeName="opacity" values="0.3;0.95;0.3" dur="1s" repeatCount="indefinite" begin="0.5s"/>
+          </path>
+        </g>` : ""}
+    </svg>`,
+
+  dryer: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <rect x="8" y="10" width="44" height="60" rx="4" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="14" y1="18" x2="46" y2="18" stroke="${color}" stroke-width="0.8" opacity="0.6"/>
+      <circle cx="30" cy="44" r="14" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <circle cx="30" cy="44" r="10" fill="${color}" opacity="${on ? 0.3 : 0.15}"/>
+      <path d="M48 30 L48 38" stroke="${color}" stroke-width="2.5" stroke-linecap="round" opacity="${on ? 1 : 0.3}"/>
+      ${on ? `
+        <g style="transform-origin:30px 44px;animation:pfc-spin 2s linear infinite;">
+          <circle cx="30" cy="36" r="1.5" fill="${color}" opacity="0.7"/>
+          <circle cx="38" cy="44" r="1.5" fill="${color}" opacity="0.7"/>
+          <circle cx="30" cy="52" r="1.5" fill="${color}" opacity="0.7"/>
+          <circle cx="22" cy="44" r="1.5" fill="${color}" opacity="0.7"/>
+        </g>
+        <path d="M48 22 Q48 16 52 16" stroke="${color}" stroke-width="1" fill="none" opacity="0.5">
+          <animate attributeName="opacity" values="0;1;0" dur="1.5s" repeatCount="indefinite"/>
+        </path>` : ""}
+    </svg>`,
+
+  oven: (color, on) => `
+    <svg viewBox="0 0 80 80" width="56" height="56">
+      <rect x="10" y="14" width="60" height="60" rx="3" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="14" y1="22" x2="66" y2="22" stroke="${color}" stroke-width="0.5" opacity="0.5"/>
+      <rect x="14" y="26" width="52" height="44" rx="2" fill="#1e293b" stroke="${color}" stroke-width="1"/>
+      <rect x="20" y="34" width="40" height="20" rx="1" fill="${color}" opacity="${on ? 0.45 : 0.1}"/>
+      <circle cx="20" cy="18" r="1.5" fill="${color}" opacity="0.7"/>
+      <circle cx="30" cy="18" r="1.5" fill="${color}" opacity="0.7"/>
+      <circle cx="60" cy="18" r="1.5" fill="${color}" opacity="${on ? 1 : 0.4}"/>
+      ${on ? `
+        <path d="M30 62 Q28 56 30 50 Q32 56 34 48 Q36 56 38 50 Q40 56 38 62 Z" fill="${color}" opacity="0.85">
+          <animate attributeName="opacity" values="0.5;1;0.5" dur="0.8s" repeatCount="indefinite"/>
+        </path>
+        <path d="M44 62 Q42 56 44 50 Q46 56 48 48 Q50 56 52 50 Q54 56 52 62 Z" fill="${color}" opacity="0.7">
+          <animate attributeName="opacity" values="0.85;0.4;0.85" dur="0.8s" repeatCount="indefinite"/>
+        </path>` : ""}
+    </svg>`,
+
+  lights: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <path d="M30 12 C20 12 14 20 14 30 C14 36 18 40 22 44 L22 52 L38 52 L38 44 C42 40 46 36 46 30 C46 20 40 12 30 12 Z"
+            fill="${color}" opacity="${on ? 0.4 : 0.1}" stroke="${color}" stroke-width="1.5"/>
+      <path d="M24 26 Q30 22 36 26 Q30 30 24 26" stroke="${color}" stroke-width="1" fill="none" opacity="${on ? 1 : 0.3}"/>
+      <rect x="22" y="52" width="16" height="4" fill="${color}" opacity="0.8"/>
+      <rect x="24" y="56" width="12" height="3" fill="${color}" opacity="0.6"/>
+      <rect x="25" y="59" width="10" height="2" fill="${color}" opacity="0.5"/>
+      ${on ? `
+        <g opacity="0.7" stroke="${color}" stroke-width="1.5" stroke-linecap="round">
+          <line x1="30" y1="2" x2="30" y2="6"/>
+          <line x1="6" y1="14" x2="11" y2="18"/>
+          <line x1="54" y1="14" x2="49" y2="18"/>
+          <line x1="2" y1="32" x2="8" y2="32"/>
+          <line x1="58" y1="32" x2="52" y2="32"/>
+          <animate attributeName="opacity" values="0.3;0.9;0.3" dur="2s" repeatCount="indefinite"/>
+        </g>` : ""}
+    </svg>`,
+
+  fridge: (color, on) => `
+    <svg viewBox="0 0 60 80" width="42" height="56">
+      <rect x="10" y="6" width="40" height="68" rx="3" fill="#1e293b" stroke="${color}" stroke-width="1.5"/>
+      <line x1="10" y1="24" x2="50" y2="24" stroke="${color}" stroke-width="1"/>
+      <rect x="10" y="6" width="40" height="18" fill="${color}" opacity="0.15"/>
+      <rect x="44" y="12" width="2" height="6" fill="${color}" opacity="0.7"/>
+      <rect x="44" y="42" width="2" height="14" fill="${color}" opacity="0.7"/>
+      <rect x="10" y="24" width="40" height="50" fill="${color}" opacity="${on ? 0.15 : 0.08}"/>
+      ${on ? `
+        <circle cx="40" cy="32" r="1.5" fill="${color}">
+          <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
+        </circle>` : ""}
+    </svg>`,
+};
+
+/**
+ * Normalise a user-supplied icon name and pick a renderer. Returns a function
+ * that produces the icon HTML/SVG given (color, on). If the name matches our
+ * animated set (case-insensitive, hyphen/underscore tolerant), uses that.
+ * Otherwise returns null — the caller should fall back to <ha-icon>.
+ */
+function resolveAnimatedIcon(name) {
+  if (!name || typeof name !== "string") return null;
+  // Normalise: lowercase, swap hyphens for underscores to match keys
+  const key = name.toLowerCase().replace(/-/g, "_");
+  // Common aliases that map to our animated set
+  const aliases = {
+    "water_boiler":      "geyser",
+    "car_electric":      "ev",
+    "ev_station":        "ev",
+    "ev_charger":        "ev",
+    "washingmachine":    "washing_machine",
+    "washer":            "washing_machine",
+    "air_conditioner":   "aircon",
+    "ac":                "aircon",
+    "light":             "lights",
+    "lightbulb":         "lights",
+    "stove":             "oven",
+    "refrigerator":      "fridge",
+  };
+  const resolved = ANIMATED_SEP_ICONS[key] ? key : aliases[key];
+  return resolved ? ANIMATED_SEP_ICONS[resolved] : null;
+}
+
+// ============================================================================
 // CSS — packaged as a single block injected at render time
 // ============================================================================
 
@@ -825,21 +1170,24 @@ function renderCss(cInv, layout) {
     .pfc-phase .pv{font-size:11px;font-weight:700;color:#fff;}
     .pfc-phase .pi{font-size:9px;color:${COLORS.text_dim};}
 
-    .pfc-seps{display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;
-              background:${COLORS.bg_darker};border-top:1px solid ${COLORS.panel_dim};}
-    .pfc-sep{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:6px;
-             padding:6px 8px;border-radius:8px;background:${COLORS.bg_dark};
-             border:1px solid ${COLORS.panel_dim};transition:border-color .3s,box-shadow .3s;}
-    .pfc-sep.on{border-color:var(--sep-color);box-shadow:0 0 8px var(--sep-color)55;}
-    .pfc-sep .si{flex-shrink:0;color:var(--sep-color);
-                 opacity:var(--sep-icon-opacity,0.4);transition:opacity .3s;
-                 --mdc-icon-size:20px;}
-    .pfc-sep.on .si{opacity:1;}
-    .pfc-sep .sb{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1;}
-    .pfc-sep .sn{font-size:9px;letter-spacing:.14em;font-weight:700;color:${COLORS.text_muted};
-                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .pfc-sep .sv{font-size:11px;font-weight:700;color:#fff;white-space:nowrap;}
-    .pfc-sep.off .sv{color:${COLORS.separator_off};}
+    /* Separator node — smaller variant of .pfc-node positioned inline within
+       the main flow canvas. Used for downstream sub-loads (pool, EV, geyser). */
+    .pfc-sep-node{position:absolute;transform:translate(-50%,-50%);display:flex;
+                  flex-direction:column;align-items:center;gap:2px;text-align:center;
+                  max-width:20%;box-sizing:border-box;}
+    .pfc-sep-node .sn{font-size:8.5px;letter-spacing:.16em;font-weight:700;
+                      color:${COLORS.text_muted};white-space:nowrap;
+                      overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+    .pfc-sep-node .sv{font-size:11px;font-weight:700;white-space:nowrap;}
+    .pfc-sep-node.off .sv{color:${COLORS.separator_off};}
+    .pfc-sep-node .ss{font-size:8.5px;color:${COLORS.text_dim};line-height:1.2;
+                      white-space:nowrap;}
+    /* Fallback ha-icon styling (when user picked a non-animated icon) */
+    .pfc-sep-node ha-icon.si{color:var(--sep-color);
+                             --mdc-icon-size:38px;
+                             opacity:var(--sep-icon-opacity,0.4);
+                             transition:opacity .3s;}
+    .pfc-sep-node.on ha-icon.si{opacity:1;}
 
     .pfc-foot{display:grid;gap:1px;background:${COLORS.panel_dim};}
     .pfc-foot.cols-6{grid-template-columns:repeat(6,minmax(0,1fr));}
@@ -853,6 +1201,7 @@ function renderCss(cInv, layout) {
     @keyframes pfc-pour{0%{transform:translateY(-12px);opacity:0;}20%{opacity:1;}
                         80%{opacity:1;}100%{transform:translateY(58px);opacity:0;}}
     @keyframes pfc-alert{0%,100%{opacity:1;}50%{opacity:.4;}}
+    @keyframes pfc-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
     .pour-b{animation:pfc-pour .9s linear infinite;}
     .pour-b:nth-child(2){animation-delay:.15s;}
     .pour-b:nth-child(3){animation-delay:.3s;}
@@ -1089,6 +1438,74 @@ function renderFlowLines(s, c, cfg, layout) {
                f.inverterToBatt.x2, f.inverterToBatt.y2,
                s.battDischarging, s.battDischarging, c.cBat);
 
+  // ─── Separator flow lines ──────────────────────────────────────────────
+  // Each separator's "on" state is in s.separators[i].on. The order matches
+  // the slot allocation in renderSeparatorNodes: index 0 → sep1, etc.
+  // Animation direction is reversed because power flows FROM the load TO the
+  // sub-loads (visually upward to sep1, downward to sep2/sep3).
+  const seps = s.separators || [];
+  const tall = layout.mode === "tall";
+
+  // sep1: top-right vertical line (tall mode only)
+  const sep1Line = (tall && f.loadToSep1 && seps[0])
+    ? flowLine(f.loadToSep1.x1, f.loadToSep1.y1,
+               f.loadToSep1.x2, f.loadToSep1.y2,
+               seps[0].on, true, seps[0].color)
+    : "";
+
+  // sep2/sep3 flow lines depend on count
+  let sepBelowLines = "";
+  if (f.loadToSep2Straight) {
+    // Exactly one separator below load — straight line down
+    // Color: the single below-load separator (which is seps[0] in short, seps[1] in tall)
+    const targetSep = tall ? seps[1] : seps[0];
+    if (targetSep) {
+      sepBelowLines = flowLine(
+        f.loadToSep2Straight.x1, f.loadToSep2Straight.y1,
+        f.loadToSep2Straight.x2, f.loadToSep2Straight.y2,
+        targetSep.on, false, targetSep.color
+      );
+    }
+  } else if (f.loadStem && f.branchBar) {
+    // Tee/branch: stem + crossbar + per-branch down lines
+    // Stem is active if ANY of the below-load separators are on
+    // For tall mode: stem connects to sep2 (index 1) and sep3 (index 2)
+    // For short mode: stem connects to sep2 (index 0) and sep3 (index 1)
+    // [and optionally sep1 center down for 3-in-short]
+    const branchSeps = tall ? [seps[1], seps[2]] : [seps[0], seps[1]];
+    const stemActive = branchSeps.some((b) => b && b.on);
+    // Stem color: average / dominant — pick the first active sep's color, or grey
+    const activeSep = branchSeps.find((b) => b && b.on);
+    const stemColor = activeSep ? activeSep.color : COLORS.idle;
+
+    const stem = flowLine(f.loadStem.x1, f.loadStem.y1,
+                          f.loadStem.x2, f.loadStem.y2,
+                          stemActive, false, stemColor);
+    const bar = flowLine(f.branchBar.x1, f.branchBar.y1,
+                         f.branchBar.x2, f.branchBar.y2,
+                         stemActive, false, stemColor);
+    const sep2Branch = (f.sep2Down && branchSeps[0])
+      ? flowLine(f.sep2Down.x1, f.sep2Down.y1,
+                 f.sep2Down.x2, f.sep2Down.y2,
+                 branchSeps[0].on, false, branchSeps[0].color)
+      : "";
+    const sep3Branch = (f.sep3Down && branchSeps[1])
+      ? flowLine(f.sep3Down.x1, f.sep3Down.y1,
+                 f.sep3Down.x2, f.sep3Down.y2,
+                 branchSeps[1].on, false, branchSeps[1].color)
+      : "";
+
+    // Center down for 3-in-short mode
+    let centerDown = "";
+    if (!tall && f.sep1CenterDown && seps[2]) {
+      centerDown = flowLine(f.sep1CenterDown.x1, f.sep1CenterDown.y1,
+                            f.sep1CenterDown.x2, f.sep1CenterDown.y2,
+                            seps[2].on, false, seps[2].color);
+    }
+
+    sepBelowLines = stem + bar + sep2Branch + sep3Branch + centerDown;
+  }
+
   return `
     <svg class="flow" viewBox="${layout.flowViewBox}" preserveAspectRatio="none">
       ${solarSection}
@@ -1100,6 +1517,8 @@ function renderFlowLines(s, c, cfg, layout) {
                  s.loadOn, false, c.cLoad)}
       ${battLine}
       ${genLine}
+      ${sep1Line}
+      ${sepBelowLines}
     </svg>
   `;
 }
@@ -1120,21 +1539,51 @@ function renderThreePhaseDetail(s, cfg) {
   `;
 }
 
-function renderLoadSeparators(s) {
+/**
+ * Render the separator NODES (positioned absolutely within .pfc-main).
+ *
+ * Each separator's position comes from the layout object:
+ *   - sep1: top-right (alongside solar, tall layout only)
+ *   - sep2: below load, left  (or centered if only 2 separators in tall mode)
+ *   - sep3: below load, right (only when 3 separators in tall mode)
+ *
+ * The icon falls back to <ha-icon mdi:...> when the user picks something not
+ * in our animated icon set.
+ *
+ * Returns a fragment of multiple positioned divs (or empty string if no
+ * separators configured).
+ */
+function renderSeparatorNodes(s, layout) {
   if (!s.separators || s.separators.length === 0) return "";
-  return `
-    <div class="pfc-seps">
-      ${s.separators.map((sep) => `
-        <div class="pfc-sep ${sep.on ? "on" : "off"}" style="--sep-color:${esc(sep.color)};">
-          <ha-icon icon="mdi:${esc(sep.icon)}" class="si"></ha-icon>
-          <div class="sb">
-            <span class="sn">${esc(sep.name.toUpperCase())}</span>
-            <span class="sv">${sep.on ? fmtPower(sep.power) : "OFF"}</span>
-          </div>
-        </div>
-      `).join("")}
-    </div>
-  `;
+  const slots = ["sep1", "sep2", "sep3"];
+  // Map separators to layout slots — order in the user's array is preserved.
+  // In tall mode, slot 0 → sep1 (top-right), 1 → sep2 (below-load left), 2 → sep3 (below-load right).
+  // In short mode, slot 0 → sep2 (below-load center or left), etc.
+  const slotKeys = layout.mode === "tall"
+    ? ["sep1", "sep2", "sep3"]
+    : (s.separators.length === 1 ? ["sep2"]
+      : s.separators.length === 2 ? ["sep2", "sep3"]
+      : ["sep2", "sep1", "sep3"]); // 3 in short: order to match flow layout
+
+  return s.separators.map((sep, i) => {
+    const slot = slotKeys[i];
+    const pos = layout.nodes[slot];
+    if (!pos) return ""; // safety: layout didn't allocate a slot
+    const resolved = resolveAnimatedIcon(sep.icon);
+    const iconHtml = resolved
+      ? resolved(sep.color, sep.on)
+      : `<ha-icon icon="mdi:${esc(sep.icon)}" class="si" style="--sep-color:${esc(sep.color)};"></ha-icon>`;
+    const valueColor = sep.on ? sep.color : COLORS.separator_off;
+    return `
+      <div class="pfc-sep-node ${sep.on ? "on" : "off"}"
+           style="left:${pos.left};top:${pos.top};--sep-color:${esc(sep.color)};">
+        ${iconHtml}
+        <span class="sn">${esc(sep.name.toUpperCase())}</span>
+        <span class="sv" style="color:${valueColor};">${sep.on ? fmtPower(sep.power) : "OFF"}</span>
+        ${sep.on && sep.today ? `<span class="ss">TODAY ${fmtEnergy(sep.today)}</span>` : ""}
+      </div>
+    `;
+  }).join("");
 }
 
 function renderEnergyFooter(s, c, cfg) {
@@ -1200,10 +1649,10 @@ function renderCard(hass, cfg) {
         ${cfg.generator.enabled ? renderGeneratorNode(s, c, layout) : ""}
         ${renderLoadNode(s, c, layout)}
         ${renderBatteryNode(s, c, cfg, layout)}
+        ${renderSeparatorNodes(s, layout)}
         ${renderInverterCenter(s)}
       </div>
       ${renderThreePhaseDetail(s, cfg)}
-      ${renderLoadSeparators(s)}
       ${renderEnergyFooter(s, c, cfg)}
     </div>
   `;
@@ -1522,6 +1971,28 @@ class PowerFlowCardEditor extends HTMLElement {
           { name: "name", selector: { text: {} } },
           { name: "power_entity", selector: optionalEntity_("sensor") },
           { name: "energy_today_entity", selector: optionalEntity_("sensor") },
+          {
+            name: "animated_icon",
+            selector: {
+              select: {
+                mode: "dropdown",
+                options: [
+                  { value: "",                label: "— None (use MDI icon below) —" },
+                  { value: "pool",            label: "Pool (animated)" },
+                  { value: "geyser",          label: "Geyser / water heater (animated)" },
+                  { value: "ev",              label: "EV charger (animated)" },
+                  { value: "washing_machine", label: "Washing machine (animated)" },
+                  { value: "dryer",           label: "Dryer (animated)" },
+                  { value: "dishwasher",      label: "Dishwasher (animated)" },
+                  { value: "oven",            label: "Oven (animated)" },
+                  { value: "heater",          label: "Heater (animated)" },
+                  { value: "aircon",          label: "Aircon (animated)" },
+                  { value: "lights",          label: "Lights (animated)" },
+                  { value: "fridge",          label: "Fridge (animated)" },
+                ],
+              },
+            },
+          },
           { name: "icon", selector: { icon: {} } },
           { name: "color", selector: { color_rgb: {} } },
           { name: "threshold_w", selector: { number: { min: 0, max: 5000, step: 1, unit_of_measurement: "W", mode: "box" } } },
@@ -1551,11 +2022,17 @@ class PowerFlowCardEditor extends HTMLElement {
     }
 
     (cfg.load_separators || []).slice(0, 3).forEach((s, i) => {
+      // If the saved icon matches one of our animated set, surface it in the
+      // animated_icon dropdown so the user sees their selection. Otherwise
+      // leave animated_icon empty and let the MDI icon field show their value.
+      const iconLower = (s?.icon || "").toLowerCase().replace(/-/g, "_");
+      const isAnimated = !!ANIMATED_SEP_ICONS[iconLower];
       data[`separator_${i + 1}`] = {
         name: s?.name,
         power_entity: s?.power_entity,
         energy_today_entity: s?.energy_today_entity,
-        icon: s?.icon,
+        animated_icon: isAnimated ? iconLower : "",
+        icon: isAnimated ? "" : s?.icon,
         color: this._hexToRgb(s?.color),
         threshold_w: s?.threshold_w,
       };
@@ -1599,11 +2076,17 @@ class PowerFlowCardEditor extends HTMLElement {
     [1, 2, 3].forEach((n) => {
       const s = data[`separator_${n}`];
       if (s && s.power_entity) {
+        // animated_icon wins over icon when both are set — that's the user
+        // explicitly choosing one of our animated names. Falls back to icon
+        // (MDI picker value) when animated_icon is empty/none.
+        const chosenIcon = (s.animated_icon && s.animated_icon !== "")
+          ? s.animated_icon
+          : s.icon;
         seps.push({
           name: s.name || `Load ${n}`,
           power_entity: s.power_entity,
           energy_today_entity: s.energy_today_entity,
-          icon: s.icon,
+          icon: chosenIcon,
           color: Array.isArray(s.color) ? this._rgbToHex(s.color) : s.color,
           threshold_w: s.threshold_w,
         });
@@ -1697,7 +2180,8 @@ class PowerFlowCardEditor extends HTMLElement {
       fuel_level_entity: "Fuel level entity",
       threshold_w: "Power threshold (W)",
       name: "Display name",
-      icon: "Icon",
+      icon: "Icon (MDI fallback if no animated icon chosen)",
+      animated_icon: "Animated icon",
       color: "Color",
       l1_power_entity: "L1 power", l1_voltage_entity: "L1 voltage", l1_current_entity: "L1 current",
       l2_power_entity: "L2 power", l2_voltage_entity: "L2 voltage", l2_current_entity: "L2 current",
